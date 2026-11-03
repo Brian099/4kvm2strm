@@ -502,18 +502,17 @@ code=200 但只有 4K 占位地址                        -> 标记 vip=1，清�
 | **STRM 导出** | 没有分集 → 自动跳过，**Emby 里不会出现播不了的条目** |
 | 4K 清晰度 | `resolve.mjs` 过滤掉非 http 的占位地址，自动退回 1080p |
 
-### 已经抓进来的老数据怎么办
+### 老数据复检（仅命令行）
 
-VIP 探测是后加的功能，之前抓的详情没有探测过。用「复检」补一遍：
+正常安装不需要用到 —— 补详情时已经探测过了。只有「VIP 探测上线之前抓的库」才需要：
 
 ```bash
-python crawl.py --recheck-vip              # 全量复检
-python crawl.py --recheck-vip --detail-limit 100   # 只查 100 部
+python crawl.py --recheck-vip                        # 全量复检
+python crawl.py --recheck-vip --detail-limit 100     # 只查 100 部
+python crawl.py --verify-vip                         # 复核已标记的，能播就恢复
 ```
 
-界面上也有对应按钮：维护工具 → 「复检 VIP」。
-
-1823 部已补详情的片，复检约 45 分钟。
+界面上**不提供**这两个入口，避免误操作。
 
 ### 实测
 
@@ -538,13 +537,11 @@ python crawl.py --recheck-vip --detail-limit 100   # 只查 100 部
    `code=401` 是明确答复，直接剔除
 2. **`code` 不是 401/200（比如 404「解析服务暂时不可用」）不动它**，下轮重试
 
-被标记后还可以复核：
+被标记后还可以复核（命令行）：
 
 ```bash
 python crawl.py --verify-vip          # 重新探两集，能播就恢复
 ```
-
-界面：维护工具 → 「复核 VIP」。
 
 ### 全新安装的默认行为
 
