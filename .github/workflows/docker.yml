@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE: brian9909/moer
+  IMAGE: brian9909/4kvm2strm
 
 jobs:
   build:

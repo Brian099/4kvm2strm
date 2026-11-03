@@ -558,7 +558,7 @@ docker compose up -d
 docker compose logs -f
 ```
 
-镜像：`brian9909/moer:latest`（amd64 + arm64，由 GitHub Actions 构建）
+镜像：`brian9909/4kvm2strm:latest`（amd64 + arm64，由 GitHub Actions 构建）
 
 **方式二：本地构建**
 
