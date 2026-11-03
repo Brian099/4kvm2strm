@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>4kvm</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#252a35; --text:#e6e8ee; --muted:#8b93a3; --accent:#4f8cff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 system-ui,"Segoe UI",sans-serif; }
+
+  header { position:sticky; top:0; z-index:50; display:flex; gap:12px; align-items:center; flex-wrap:wrap;
+           padding:12px 18px; background:rgba(15,17,21,.92); backdrop-filter:blur(8px);
+           border-bottom:1px solid var(--line); }
+  h1 { font-size:16px; margin:0; white-space:nowrap; }
+  .stats { color:var(--muted); font-size:13px; }
+  .grow { flex:1 1 auto; }
+  /* 只给文本类输入框加样式：之前写成 input 会把复选框也撑成 180px 宽 */
+  input[type=text], input[type=password], input[type=search], input[type=url], input:not([type]) {
+    background:var(--panel); border:1px solid var(--line); color:var(--text);
+    padding:7px 11px; border-radius:8px; min-width:180px; max-width:100%;
+  }
+  button { background:var(--accent); border:0; color:#fff; padding:7px 14px; border-radius:8px;
+           cursor:pointer; font-size:13.5px; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--text); }
+  button:disabled { opacity:.35; cursor:default; }
+
+  main { padding:16px 18px 48px; }
+
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:14px 12px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden;
+          cursor:pointer; transition:border-color .15s, transform .15s; }
+  .card:hover { border-color:var(--accent); transform:translateY(-2px); }
+  .card img { width:100%; aspect-ratio:2/3; object-fit:cover; display:block; background:#0b0d11; }
+  .card img.fail { opacity:.1; }
+  .card .t { padding:7px 9px; font-size:12.5px; line-height:1.35; }
+  .card .t span { display:block; color:var(--muted); font-size:11.5px; }
+  .empty { color:var(--muted); padding:40px 0; text-align:center; }
+
+  .pager { display:flex; gap:10px; align-items:center; justify-content:center; margin:22px 0 6px; }
+
+  /* ---------- 筛选栏 ---------- */
+  .filters { display:flex; flex-direction:column; gap:8px; margin-bottom:16px; }
+  .frow { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .frow .label { color:var(--muted); font-size:12.5px; min-width:36px; }
+  .chip { background:var(--panel); border:1px solid var(--line); color:var(--text);
+          padding:5px 11px; border-radius:999px; font-size:12.5px; cursor:pointer; user-select:none; }
+  .chip b { color:var(--muted); font-weight:400; margin-left:5px; font-size:11.5px; }
+  .chip:hover { border-color:var(--accent); }
+  .chip.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .chip.active b { color:rgba(255,255,255,.75); }
+
+  /* ---------- 弹层 ---------- */
+  .mask { position:fixed; inset:0; z-index:200; background:rgba(0,0,0,.72); backdrop-filter:blur(3px);
+          display:none; align-items:center; justify-content:center; padding:20px; }
+  .mask.on { display:flex; }
+  .modal { width:min(880px,100%); max-height:88vh; display:flex; flex-direction:column;
+           background:var(--panel); border:1px solid var(--line); border-radius:14px; overflow:hidden; }
+  .modal-head { display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid var(--line); }
+  .modal-head h2 { font-size:15px; margin:0; flex:1 1 auto; }
+  .close { background:transparent; border:0; color:var(--muted); font-size:22px; line-height:1; padding:0 4px; }
+  .close:hover { color:var(--text); }
+  .modal-body { padding:14px 16px 16px; overflow:auto; }
+
+  /* ---------- 维护工具 ---------- */
+  /* 维护工具弹层用窄一点的宽度，控件才靠得近 */
+  .modal-ops { width:min(620px,100%); }
+  .fgroup { margin-bottom:14px; }
+  .fgroup:last-of-type { margin-bottom:0; }
+  .fg-title { color:var(--muted); font-size:12.5px; margin-bottom:6px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  /* 关键：输入框不要撑满整行，否则按钮被顶到最右边 */
+  .row input { flex:0 1 320px; width:320px; max-width:100%; min-width:0; }
+  .checks { display:flex; gap:14px; flex-wrap:wrap; margin-top:8px; }
+  .checks label { display:flex; align-items:center; gap:5px; color:var(--text);
+                  font-size:13px; line-height:1.2; cursor:pointer; white-space:nowrap; }
+  .checks input {
+    -webkit-appearance:auto; appearance:auto;
+    width:15px; height:15px; min-width:0; min-height:0;
+    padding:0; margin:0; border:0; background:none; border-radius:0;
+    accent-color:var(--accent); flex:0 0 auto;
+  }
+  .sep { border:0; border-top:1px solid var(--line); margin:2px 0 18px; }
+  .bar { height:6px; background:#0b0d11; border-radius:4px; overflow:hidden; margin:6px 0 12px; }
+  .bar-in { height:100%; width:0; background:var(--accent); transition:width .3s; }
+  .logbox { background:#0b0d11; border:1px solid var(--line); border-radius:8px; padding:9px 11px;
+            height:140px; overflow:auto; font:12px/1.5 Consolas,Menlo,monospace;
+            color:#9aa4b2; white-space:pre-wrap; word-break:break-all; }
+  .tip { color:var(--muted); font-size:12.5px; margin:10px 0 0; }
+
+  /* ---------- 详情 ---------- */
+  .dhead { display:flex; gap:16px; margin-bottom:16px; }
+  .dhead img { width:120px; aspect-ratio:2/3; object-fit:cover; border-radius:10px; background:#0b0d11; flex:0 0 auto; }
+  .dhead .meta { flex:1 1 auto; min-width:0; }
+  .dhead .meta h3 { margin:0 0 8px; font-size:16px; }
+  .kv { color:var(--muted); font-size:12.5px; margin:0 0 4px; }
+  .eps { display:grid; grid-template-columns:repeat(auto-fill,minmax(78px,1fr)); gap:8px; }
+  .eps a { background:#0f1115; border:1px solid var(--line); border-radius:8px; padding:9px 0;
+           text-align:center; color:var(--text); text-decoration:none; font-size:13px; }
+  .eps a:hover { border-color:var(--accent); color:var(--accent); }
+
+  @media (max-width:560px) {
+    header { padding:10px 12px; gap:8px; }
+    main { padding:12px 12px 40px; }
+    .grid { grid-template-columns:repeat(auto-fill,minmax(102px,1fr)); gap:12px 9px; }
+    .mask { padding:10px; }
+    .modal-body { padding:12px; }
+    .dhead { gap:12px; }
+    .dhead img { width:90px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>4kvm</h1>
+  <span class="stats" id="stats">—</span>
+  <span class="grow"></span>
+  <input id="q" placeholder="搜索片名…">
+  <button id="btnSearch">搜索</button>
+  <button class="ghost" id="btnOps">维护工具</button>
+</header>
+
+<main>
+  <div class="filters">
+    <div class="frow" id="catRow"><span class="label">分类</span></div>
+    <div class="frow" id="yearRow"><span class="label">年份</span></div>
+  </div>
+  <div class="grid" id="grid"></div>
+  <div class="pager">
+    <button class="ghost" id="btnPrev">上一页</button>
+    <span class="stats" id="pageInfo">—</span>
+    <button class="ghost" id="btnNext">下一页</button>
+  </div>
+</main>
+
+<div class="mask" id="opsMask">
+  <div class="modal modal-ops">
+    <div class="modal-head">
+      <h2>维护工具</h2>
+      <button class="close" id="btnOpsClose">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="fgroup">
+        <div class="fg-title">抓取</div>
+        <div class="row">
+          <button id="btnCrawlList">更新目录</button>
+          <button id="btnCrawlDetail">补详情</button>
+          <button id="btnCrawlAll">全流程</button>
+        </div>
+      </div>
+
+      <div class="fgroup">
+        <div class="fg-title">导出 STRM</div>
+        <div class="row">
+          <button id="btnExport">开始导出</button>
+        </div>
+        <div class="checks">
+          <label><input type="checkbox" id="optNfo"> NFO 元数据</label>
+          <label><input type="checkbox" id="optImg"> 下载海报</label>
+          <label><input type="checkbox" id="optClean" checked> 清理孤儿</label>
+        </div>
+        <p class="tip">清理孤儿 = 删掉库里已不存在的旧 .strm 文件</p>
+      </div>
+
+      <div class="fgroup">
+        <div class="bar"><div class="bar-in" id="jobBar"></div></div>
+        <div class="stats" id="jobText">空闲</div>
+        <div class="logbox" id="jobLog" style="margin-top:10px">等待任务…</div>
+      </div>
+
+      <hr class="sep">
+
+      <div class="fgroup">
+        <div class="fg-title">服务地址（写进 .strm 和 CMS 接口，必须是播放器能访问到的地址）</div>
+        <div class="row">
+          <input id="setBase" placeholder="http://192.168.1.147:8900">
+          <button id="btnSaveBase">保存并重新生成 STRM</button>
+        </div>
+      </div>
+
+      <div class="fgroup">
+        <div class="fg-title">CMS 接口密码（留空=公开）</div>
+        <div class="row">
+          <input id="setKey" placeholder="留空则不校验">
+          <button class="ghost" id="btnSaveKey">保存密码</button>
+        </div>
+      </div>
+
+      <div class="fgroup">
+        <div class="fg-title">CMS 接口地址（TVBox「添加接口」填这个）</div>
+        <div class="row">
+          <input id="cmsUrl" readonly>
+          <button class="ghost" id="btnCopyCms">复制</button>
+        </div>
+      </div>
+
+      <p class="tip">导出目录：<code id="opsRoot">—</code></p>
+    </div>
+  </div>
+</div>
+
+<div class="mask" id="detailMask">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="dTitle">—</h2>
+      <button class="close" id="btnDetailClose">&times;</button>
+    </div>
+    <div class="modal-body" id="dBody"></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const PAGE = 60;
+let page = 1, kw = "", totalPages = 1;
+const state = { cat: "", year: "" };
+
+async function api(path, params) {
+  const u = new URL(path, location.origin);
+  Object.entries(params || {}).forEach(([k, v]) => u.searchParams.set(k, v));
+  const r = await fetch(u);
+  return r.json();
+}
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+async function loadSettings() {
+  const d = await (await fetch("/api/settings")).json();
+  $("setBase").value = (d.settings && d.settings.public_base) || "";
+  $("setKey").value = (d.settings && d.settings.api_key) || "";
+  $("cmsUrl").value = d.cms_url || "";
+  $("opsRoot").textContent = d.strm_root || "strm/";
+}
+
+async function saveSettings(withRegen) {
+  const body = { public_base: $("setBase").value.trim(), api_key: $("setKey").value.trim() };
+  if (withRegen) { body.regen_strm = true; body.nfo = $("optNfo").checked; body.images = $("optImg").checked; }
+  const d = await (await fetch("/api/settings", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  })).json();
+  $("cmsUrl").value = d.cms_url || "";
+  $("jobText").textContent = d.msg || "已保存";
+  if (d.regen) pollJob(); else loadStats();
+}
+
+async function loadStats() {
+  const d = await api("/api/stats");
+  $("stats").textContent = "入库 " + d.vods + " 部 · " + d.episodes + " 集 · 已补详情 " + d.detailed + " 部";
+  if ($("opsRoot")) $("opsRoot").textContent = d.strm_root || "strm/";
+}
+
+async function loadFilters() {
+  const d = await api("/api/filters");
+  const catRow = $("catRow");
+  catRow.innerHTML = '<span class="label">分类</span>';
+  const allCats = (d.cats || []).reduce((a, c) => a + c.count, 0);
+  catRow.appendChild(chip("", "全部", allCats, state.cat === ""));
+  (d.cats || []).forEach((c) => catRow.appendChild(chip(c.name, c.name, c.count, state.cat === c.name)));
+
+  const yearRow = $("yearRow");
+  yearRow.innerHTML = '<span class="label">年份</span>';
+  const years = d.years || [];
+  if (!years.length) {
+    const t = document.createElement("span");
+    t.className = "label";
+    t.textContent = "（补详情后才有年份）";
+    yearRow.appendChild(t);
+  } else {
+    yearRow.appendChild(chip("", "全部", 0, state.year === ""));
+    years.forEach((y) => yearRow.appendChild(chip(y.year, y.year, y.count, state.year === y.year)));
+  }
+}
+
+function chip(value, text, count, active) {
+  const el = document.createElement("div");
+  el.className = "chip" + (active ? " active" : "");
+  el.innerHTML = esc(text) + (count ? "<b>" + count + "</b>" : "");
+  el.onclick = () => {
+    if (el.parentNode.id === "catRow") state.cat = value;
+    else state.year = value;
+    page = 1;
+    loadFilters();
+    loadList();
+  };
+  return el;
+}
+
+async function loadList() {
+  const d = await api("/api/list", {
+    limit: PAGE, offset: (page - 1) * PAGE, q: kw, cat: state.cat, year: state.year,
+  });
+  const grid = $("grid");
+  grid.innerHTML = "";
+  totalPages = Math.max(1, Math.ceil(d.total / PAGE));
+  $("pageInfo").textContent = "第 " + page + " / " + totalPages + " 页 · 共 " + d.total + " 部";
+  $("btnPrev").disabled = page <= 1;
+  $("btnNext").disabled = page >= totalPages;
+
+  if (!d.list.length) {
+    grid.innerHTML = '<div class="empty">没有数据。先跑 python crawl.py --pages 2</div>';
+    return;
+  }
+  for (const v of d.list) {
+    const c = document.createElement("div");
+    c.className = "card";
+    c.innerHTML = '<img loading="lazy" alt="" ' + (v.pic ? 'src="' + esc(v.pic) + '"' : "") +
+      ' onerror="this.classList.add(\'fail\')">' +
+      '<div class="t">' + esc(v.name) + '<span>' +
+      (v.ep_count ? v.ep_count + " 集" : "未补详情") + '</span></div>';
+    c.onclick = () => openDetail(v);
+    grid.appendChild(c);
+  }
+}
+
+async function openDetail(v) {
+  $("dTitle").textContent = v.name || v.slug;
+  $("dBody").innerHTML = '<div class="empty">加载分集…</div>';
+  $("detailMask").classList.add("on");
+
+  const d = await api("/api/eps", { slug: v.slug });
+  const eps = d.list || [];
+  const meta = [];
+  if (v.cat) meta.push("分类：" + esc(v.cat));
+  if (v.year) meta.push("年份：" + esc(v.year));
+  if (v.area) meta.push("地区：" + esc(v.area));
+  if (v.remarks) meta.push("状态：" + esc(v.remarks));
+
+  let html = '<div class="dhead">' +
+    '<img src="' + esc(v.pic || "") + '" alt="" onerror="this.classList.add(\'fail\')">' +
+    '<div class="meta"><h3>' + esc(v.name) + '</h3>' +
+    meta.map((m) => '<p class="kv">' + m + '</p>').join("") +
+    '<p class="kv">' + (eps.length ? eps.length + " 集 · slug " + esc(v.slug) : "还没有分集，先补详情") + '</p>' +
+    '</div></div>';
+
+  if (eps.length) {
+    html += '<div class="eps">' + eps.map((e) =>
+      '<a href="/v/' + esc(v.slug) + '/' + esc(e.ep_id) + '.m3u8" target="_blank" rel="noreferrer">第' +
+      e.seq + '集</a>').join("") + '</div>' +
+      '<p class="tip">点集会打开 m3u8 地址；更适合把地址丢给 Emby / PotPlayer。</p>';
+  }
+  $("dBody").innerHTML = html;
+}
+
+async function startCrawl(mode) {
+  const r = await fetch("/api/crawl", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
+  const d = await r.json();
+  if (!d.ok) { $("jobText").textContent = d.msg || "启动失败"; return; }
+  pollJob();
+}
+
+async function startExport() {
+  const body = {
+    nfo: $("optNfo").checked,
+    images: $("optImg").checked,
+    clean: $("optClean").checked,
+  };
+  const r = await fetch("/api/export", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const d = await r.json();
+  if (!d.ok) { $("jobText").textContent = d.msg || "启动失败"; return; }
+  pollJob();
+}
+
+let jobTimer = null;
+async function pollJob() {
+  clearTimeout(jobTimer);
+  const j = (await (await fetch("/api/job")).json()).job;
+  const p = j.progress || {};
+  const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
+  $("jobBar").style.width = pct + "%";
+  $("jobText").textContent = j.running
+    ? j.kind + " 进行中 " + j.elapsed + "s · " + (p.phase || "") + " " + p.done + "/" + p.total + "（" + pct + "%）"
+    : (j.result ? "上次导出完成：" + JSON.stringify(j.result) : "空闲");
+  if (j.logs && j.logs.length) $("jobLog").textContent = j.logs.join("\n");
+  if (j.running) jobTimer = setTimeout(pollJob, 1500);
+  else { loadStats(); loadList(); }
+}
+
+$("btnSearch").onclick = () => { kw = $("q").value.trim(); page = 1; loadList(); };
+$("q").onkeydown = (e) => { if (e.key === "Enter") $("btnSearch").click(); };
+$("btnPrev").onclick = () => { if (page > 1) { page--; loadList(); window.scrollTo(0, 0); } };
+$("btnNext").onclick = () => { if (page < totalPages) { page++; loadList(); window.scrollTo(0, 0); } };
+$("btnOps").onclick = () => { $("opsMask").classList.add("on"); loadSettings(); pollJob(); };
+$("btnSaveBase").onclick = () => saveSettings(true);
+$("btnSaveKey").onclick = () => saveSettings(false);
+$("btnCopyCms").onclick = () => {
+  const v = $("cmsUrl").value;
+  if (!v) return;
+  navigator.clipboard ? navigator.clipboard.writeText(v) : null;
+  $("jobText").textContent = "已复制接口地址";
+};
+$("btnOpsClose").onclick = () => $("opsMask").classList.remove("on");
+$("btnDetailClose").onclick = () => $("detailMask").classList.remove("on");
+$("btnExport").onclick = startExport;
+$("btnCrawlList").onclick = () => startCrawl("list");
+$("btnCrawlDetail").onclick = () => startCrawl("detail");
+$("btnCrawlAll").onclick = () => startCrawl("all");
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    $("opsMask").classList.remove("on");
+    $("detailMask").classList.remove("on");
+  }
+});
+Array.prototype.forEach.call(document.querySelectorAll(".mask"), (m) => {
+  m.addEventListener("click", (e) => { if (e.target === m) m.classList.remove("on"); });
+});
+
+loadStats();
+loadFilters();
+loadList();
+</script>
+</body>
+</html>

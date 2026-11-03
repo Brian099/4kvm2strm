@@ -1,0 +1,51 @@
+services:
+  kvm4:
+    build: .
+    image: 4kvm:latest
+    container_name: 4kvm
+    restart: unless-stopped
+    ports:
+      - "8900:8900"
+    environment:
+      TZ: Asia/Shanghai
+
+      # ---- 站点（换域名只改这里）----
+      VM_HOST: "https://4kvm.top"
+
+      # ---- 本服务地址（写进 .strm / CMS 接口，必须是播放器能访问到的地址）----
+      # 首次启动的默认值，之后以界面「维护工具」里保存的为准
+      VM_PUBLIC_BASE: "http://192.168.1.147:8900"
+
+      # ---- 播放方式 ----
+      # direct = 播放列表里的分片直连 CDN，服务器零视频带宽（推荐）
+      # proxy  = 分片经本服务转发（可剥假 PNG 头 + 磁盘缓存，兼容性更好）
+      VM_SEG_MODE: "direct"
+
+      # ---- 自动更新 ----
+      # 启动后立刻跑一次「抓目录 -> 补详情 -> 导出 STRM」
+      VM_BOOTSTRAP: "1"
+      # 定时更新间隔（小时），0=只在启动时跑一次
+      VM_INTERVAL_HOURS: "24"
+      # 自动更新时顺带导出 STRM / NFO / 海报
+      VM_AUTO_EXPORT: "1"
+      VM_AUTO_NFO: "1"
+      VM_AUTO_IMAGES: "1"
+
+      # ---- 苹果CMS 兼容接口 ----
+      # 留空=公开；非空时 /api.php 要带 &key=xxx
+      VM_API_KEY: ""
+      VM_API_PLAY_FROM: "4kvm"
+
+      # ---- 其它 ----
+      VM_QUALITY: "1080"
+      VM_THREADS: "16"
+      VM_IMAGE_WORKERS: "8"
+    volumes:
+      - ./data:/app/data
+      - ./strm:/app/strm
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8900/api/stats', timeout=5).status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
