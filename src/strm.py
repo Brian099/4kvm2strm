@@ -247,7 +247,9 @@ def export(root=None, cat="", limit=0, nfo=False, images=False, clean=False, ep_
             url = play_url(v["slug"], ep["ep_id"])
             path = os.path.join(series_dir, title + ".strm")
             total_files += 1
-            if manifest.get(os.path.normcase(path)) != url:
+            # 不能只比对地址：文件被手动删掉时 manifest 还留着旧记录，
+            # 只比地址会误判成「没变化」而跳过。
+            if manifest.get(os.path.normcase(path)) != url or not os.path.exists(path):
                 w.write(path, url + "\n")
                 written += 1
             now_manifest[os.path.normcase(path)] = url
@@ -260,7 +262,7 @@ def export(root=None, cat="", limit=0, nfo=False, images=False, clean=False, ep_
                 url = play_url(v["slug"], ep["ep_id"])
                 path = os.path.join(season_dir, "%s S01E%02d.strm" % (title, seq))
                 total_files += 1
-                if manifest.get(os.path.normcase(path)) != url:
+                if manifest.get(os.path.normcase(path)) != url or not os.path.exists(path):
                     w.write(path, url + "\n")
                     written += 1
                 now_manifest[os.path.normcase(path)] = url
