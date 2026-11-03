@@ -550,11 +550,25 @@ self.upload_config = {
 镜像用多阶段构建，只从 `node:20-slim` 拷一个 node 二进制进 `python:3.12-slim`，
 不装整包。构建期会自检「Python 模块能导入 + Node 能加载站点 wasm」。
 
+**方式一：直接拉镜像（推荐）**
+
 ```bash
-cd 4kvm分析
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 docker compose logs -f
 ```
+
+镜像：`brian9909/moer:latest`（amd64 + arm64，由 GitHub Actions 构建）
+
+**方式二：本地构建**
+
+把 `docker-compose.yml` 里的 `image:` 注释掉、`build: .` 打开，然后：
+
+```bash
+docker compose up -d --build
+```
+
+源码仓库：<https://github.com/Brian099/4kvm2strm>
 
 ### 环境变量
 

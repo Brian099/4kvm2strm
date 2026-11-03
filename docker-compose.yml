@@ -1,7 +1,9 @@
 services:
   kvm4:
-    build: .
-    image: 4kvm:latest
+    # 直接拉取 GitHub Actions 构建好的镜像
+    image: brian9909/moer:latest
+    # 想本地构建就注释掉上面那行，打开下面这行
+    # build: .
     container_name: 4kvm
     restart: unless-stopped
     ports:
