@@ -100,6 +100,8 @@
   .eps a:hover { border-color:var(--accent); color:var(--accent); }
 
   /* ---------- 播放器 ---------- */
+  /* 播放器是从详情弹层里打开的，必须压在它上面 */
+  #playerMask { z-index: 300; }
   .modal-player { width:min(1000px,100%); }
   .modal-player .modal-body { padding:0; background:#000; }
   #video { display:block; width:100%; max-height:72vh; background:#000; }
