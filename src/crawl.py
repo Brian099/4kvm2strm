@@ -11,7 +11,9 @@
 """
 import argparse
 import html
+import json
 import random
+import subprocess
 import re
 import sys
 import time
@@ -67,6 +69,60 @@ EP = re.compile(
     re.S,
 )
 TOTAL = re.compile(r'共\s*([\d,]+)\s*(?:部|个|条)')
+
+
+class Prober:
+    """常驻 Node 探测进程：判断一部片有没有「免费可播源」。
+
+    站点把 VIP 专属片和 4K 蓝光都做成「取流接口返回 401 / 只给占位地址」，
+    只有真的调一次取流接口才知道。常驻进程是为了摊掉 Node 启动开销。
+    """
+
+    def __init__(self):
+        self.proc = None
+
+    def start(self):
+        if self.proc:
+            return True
+        try:
+            self.proc = subprocess.Popen(
+                [config.NODE_BIN, "probe.mjs"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, encoding="utf-8", errors="replace", cwd=config.BASE_DIR,
+            )
+            line = self.proc.stdout.readline()
+            return '"ready":true' in line.replace(" ", "")
+        except Exception as e:
+            log("[警告] 探测进程启动失败：%r" % (e,))
+            self.proc = None
+            return False
+
+    def probe(self, ep_id, slug, pk, quality="1080", timeout=40):
+        """返回 dict：{code, free, has4k, msg}；失败返回 None。"""
+        if not self.start():
+            return None
+        try:
+            self.proc.stdin.write(json.dumps({
+                "id": str(ep_id), "secret": slug, "pk": pk, "q": quality}) + "\n")
+            self.proc.stdin.flush()
+            line = self.proc.stdout.readline()
+            if not line:
+                self.close()
+                return None
+            return json.loads(line)
+        except Exception as e:
+            log("[警告] 探测异常：%r" % (e,))
+            self.close()
+            return None
+
+    def close(self):
+        if self.proc:
+            try:
+                self.proc.stdin.close()
+                self.proc.terminate()
+            except Exception:
+                pass
+            self.proc = None
 
 
 def session():
@@ -247,12 +303,14 @@ def crawl_search(s, keyword, pages=1):
     return got
 
 
-def crawl_details(s, limit=0):
+def crawl_details(s, limit=0, check_vip=True):
+    """补详情。check_vip=True 时顺带探测取流接口，VIP 专属/无免费源的片直接标记剔除。"""
     rows = db.conn().execute(
         "SELECT slug,name FROM vod WHERE detail_at=0 ORDER BY rowid LIMIT ?",
         (limit or 10 ** 9,)).fetchall()
-    log("待补详情：%d 部" % len(rows))
-    ok = 0
+    log("待补详情：%d 部（VIP 探测：%s）" % (len(rows), "开" if check_vip else "关"))
+    prober = Prober() if check_vip else None
+    ok = vip = 0
     for i, row in enumerate(rows, 1):
         slug = row["slug"]
         r = get(s, "/play/" + slug)
@@ -263,10 +321,30 @@ def crawl_details(s, limit=0):
         if not eps:
             log("  [%d/%d] %s 没解析到分集" % (i, len(rows), slug))
             continue
-        db.replace_episodes(slug, eps)
+        # 探测有没有免费可播源（VIP 专属片、只有 4K 占位地址的片都会被剔除）
+        if prober:
+            m = re.search(r"userlink:'([^']*)'", r.text)
+            pk = m.group(1) if m else "0"
+            info = prober.probe(eps[0]["ep_id"], slug, pk)
+            if info is None:
+                # 探测失败：不写 detail_at，下一轮再试
+                log("  [%d/%d] %s 探测失败，跳过（下轮重试）" % (i, len(rows), row["name"]))
+                time.sleep(config.DETAIL_SLEEP)
+                continue
+            code = info.get("code")
+            free = info.get("free", 0) or 0
+            if code == 401 or (code == 200 and free == 0):
+                db.mark_vip(slug, 1)
+                vip += 1
+                reason = "VIP 专属" if code == 401 else "无免费清晰度"
+                log("  [%d/%d] %s -> 剔除（%s）" % (i, len(rows), row["name"], reason))
+                time.sleep(config.DETAIL_SLEEP)
+                continue
+
         meta = parse_meta(r.text)
+        db.replace_episodes(slug, eps)
         c = db.conn()
-        c.execute("UPDATE vod SET ep_count=?, detail_at=?, year=?, area=? WHERE slug=?",
+        c.execute("UPDATE vod SET ep_count=?, detail_at=?, year=?, area=?, vip=0 WHERE slug=?",
                   (len(eps), int(time.time()), meta.get("year", ""),
                    meta.get("area", ""), slug))
         c.commit()
@@ -275,7 +353,51 @@ def crawl_details(s, limit=0):
         if i % 20 == 0 or i == len(rows):
             log("  详情 %d/%d（%s：%d 集）" % (i, len(rows), row["name"], len(eps)))
         time.sleep(config.DETAIL_SLEEP + random.random() * 0.5)
+    if prober:
+        prober.close()
+    log("详情完成：入库 %d 部，剔除 %d 部（VIP/无源）" % (ok, vip))
     return ok
+
+
+def recheck_vip(s, limit=0):
+    """对已入库的片重新探测一遍，把 VIP 专属/无免费源的剔除。
+
+    用于「VIP 探测」上线之前已经抓进来的数据。
+    """
+    rows = db.conn().execute(
+        "SELECT slug,name FROM vod WHERE vip=0 AND ep_count>0 ORDER BY rowid LIMIT ?",
+        (limit or 10 ** 9,)).fetchall()
+    log("待复检：%d 部" % len(rows))
+    prober = Prober()
+    ok = vip = fail = 0
+    for i, row in enumerate(rows, 1):
+        slug = row["slug"]
+        eps = db.episodes(slug)
+        if not eps:
+            continue
+        try:
+            h = s.get(config.HOST + "/play/" + slug, timeout=25, verify=False).text
+        except Exception:
+            fail += 1
+            continue
+        m = re.search(r"userlink:'([^']*)'", h)
+        pk = m.group(1) if m else "0"
+        info = prober.probe(eps[0]["ep_id"], slug, pk)
+        if info is None:
+            fail += 1
+        elif info.get("code") == 401 or (info.get("code") == 200 and not info.get("free")):
+            db.mark_vip(slug, 1)
+            vip += 1
+            log("  [%d/%d] %s -> 剔除" % (i, len(rows), row["name"]))
+        else:
+            ok += 1
+        progress("复检 VIP", i, len(rows))
+        if i % 50 == 0 or i == len(rows):
+            log("  复检 %d/%d（保留 %d，剔除 %d，失败 %d）" % (i, len(rows), ok, vip, fail))
+        time.sleep(config.DETAIL_SLEEP * 0.6)
+    prober.close()
+    log("复检完成：保留 %d，剔除 %d，失败 %d" % (ok, vip, fail))
+    return vip
 
 
 def main():
@@ -284,6 +406,10 @@ def main():
     ap.add_argument("--start", type=int, default=1)
     ap.add_argument("--detail-only", action="store_true")
     ap.add_argument("--detail-limit", type=int, default=0)
+    ap.add_argument("--recheck-vip", action="store_true",
+                    help="对已入库的片重新探测并剔除 VIP/无源")
+    ap.add_argument("--no-vip-check", action="store_true",
+                    help="补详情时不探测 VIP（更快，但会留下播不了的片）")
     ap.add_argument("--skip-detail", action="store_true")
     ap.add_argument("--cats", default="", help="只抓这些分类，逗号分隔（1=电影 2=电视剧 3=动漫）")
     ap.add_argument("--search", default="", help="站内搜索（实测不可用，仅保留排查用）")
@@ -293,6 +419,12 @@ def main():
     s = session()
     print("目标站点：%s" % config.HOST)
     print("当前库：%s" % db.stats())
+
+    if args.recheck_vip:
+        n = recheck_vip(s, args.detail_limit)
+        print("复检完成，剔除 %d 部" % n)
+        print("最终库：%s" % db.stats())
+        return 0
 
     if args.search:
         print("[注意] 站点搜索实测不可用（返回空结果），建议改用本地库搜索")
@@ -308,7 +440,7 @@ def main():
         print("目录抓取完成：%d 部" % got)
 
     if not args.skip_detail:
-        n = crawl_details(s, args.detail_limit)
+        n = crawl_details(s, args.detail_limit, check_vip=not args.no_vip_check)
         print("详情抓取完成：%d 部" % n)
 
     print("最终库：%s" % db.stats())

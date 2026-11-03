@@ -345,7 +345,9 @@ def api_list():
     kw = (request.args.get("q") or "").strip()
     cat = (request.args.get("cat") or "").strip()
     year = (request.args.get("year") or "").strip()
-    rows, total = db.list_vods(limit=limit, offset=offset, keyword=kw, cat=cat, year=year)
+    include_vip = request.args.get("vip") == "1"
+    rows, total = db.list_vods(limit=limit, offset=offset, keyword=kw, cat=cat,
+                               year=year, only_ok=not include_vip)
     return jsonify({"ok": True, "total": total, "list": rows})
 
 
@@ -512,6 +514,9 @@ def api_crawl():
         ok, msg = job.start("抓目录", lambda: _crawl_all(pages, 0, True, False))
     elif mode == "detail":
         ok, msg = job.start("补详情", lambda: _crawl_all(0, detail_limit, False, True))
+    elif mode == "recheck":
+        ok, msg = job.start("复检 VIP",
+                            lambda: crawl.recheck_vip(crawl.session(), detail_limit))
     else:
         ok, msg = job.start("全流程抓取", lambda: _crawl_all(pages, detail_limit, True, True))
     return jsonify({"ok": ok, "msg": msg}), (200 if ok else 409)

@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS vod (
     area       TEXT,
     remarks    TEXT,
     ep_count   INTEGER DEFAULT 0,
-    detail_at  INTEGER DEFAULT 0
+    detail_at  INTEGER DEFAULT 0,
+    vip        INTEGER DEFAULT 0   -- 0=正常 1=VIP专属/无免费源（不入库分集）
 );
 CREATE TABLE IF NOT EXISTS episode (
     slug   TEXT NOT NULL,          -- 所属剧
@@ -94,8 +95,10 @@ def episodes(slug):
         "SELECT ep_id,seq,name FROM episode WHERE slug=? ORDER BY seq", (slug,)).fetchall()]
 
 
-def _vod_where(keyword="", cat="", year=""):
+def _vod_where(keyword="", cat="", year="", only_ok=True):
     where, args = [], []
+    if only_ok:
+        where.append("vip = 0")
     if keyword:
         where.append("name LIKE ?")
         args.append("%" + keyword + "%")
@@ -108,8 +111,8 @@ def _vod_where(keyword="", cat="", year=""):
     return ((" WHERE " + " AND ".join(where)) if where else ""), args
 
 
-def list_vods(limit=60, offset=0, keyword="", cat="", year=""):
-    w, args = _vod_where(keyword, cat, year)
+def list_vods(limit=60, offset=0, keyword="", cat="", year="", only_ok=True):
+    w, args = _vod_where(keyword, cat, year, only_ok)
     c = conn()
     rows = c.execute("SELECT * FROM vod" + w + " ORDER BY rowid DESC LIMIT ? OFFSET ?",
                      args + [limit, offset]).fetchall()
@@ -122,19 +125,22 @@ def filters():
     c = conn()
     cats = [{"name": r["c"], "count": r["n"]} for r in c.execute(
         "SELECT COALESCE(NULLIF(cat,''),'未分类') AS c, COUNT(*) AS n "
-        "FROM vod GROUP BY c ORDER BY n DESC").fetchall()]
+        "FROM vod WHERE vip=0 GROUP BY c ORDER BY n DESC").fetchall()]
     years = [{"year": r["y"], "count": r["n"]} for r in c.execute(
         "SELECT year AS y, COUNT(*) AS n FROM vod "
-        "WHERE year<>'' AND year IS NOT NULL GROUP BY y ORDER BY y DESC").fetchall()]
+        "WHERE vip=0 AND year<>'' AND year IS NOT NULL GROUP BY y ORDER BY y DESC").fetchall()]
     return {"cats": cats, "years": years}
 
 
 def stats():
     c = conn()
     return {
-        "vods": c.execute("SELECT COUNT(*) n FROM vod").fetchone()["n"],
+        "vods": c.execute("SELECT COUNT(*) n FROM vod WHERE vip=0").fetchone()["n"],
         "episodes": c.execute("SELECT COUNT(*) n FROM episode").fetchone()["n"],
-        "detailed": c.execute("SELECT COUNT(*) n FROM vod WHERE detail_at>0").fetchone()["n"],
+        "detailed": c.execute(
+            "SELECT COUNT(*) n FROM vod WHERE detail_at>0 AND vip=0").fetchone()["n"],
+        "vip": c.execute("SELECT COUNT(*) n FROM vod WHERE vip<>0").fetchone()["n"],
+        "total_rows": c.execute("SELECT COUNT(*) n FROM vod").fetchone()["n"],
     }
 
 
@@ -147,6 +153,15 @@ def set_setting(key, value):
     c = conn()
     c.execute("INSERT INTO setting(key,value) VALUES(?,?) "
               "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, str(value)))
+    c.commit()
+
+
+def mark_vip(slug, flag=1):
+    """标记 VIP 专属 / 无免费源，并清掉它的分集（导出时会自动跳过）。"""
+    c = conn()
+    c.execute("DELETE FROM episode WHERE slug=?", (slug,))
+    c.execute("UPDATE vod SET vip=?, ep_count=0, detail_at=? WHERE slug=?",
+              (int(flag), int(__import__("time").time()), slug))
     c.commit()
 
 

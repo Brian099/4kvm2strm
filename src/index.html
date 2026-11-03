@@ -157,6 +157,7 @@
           <button id="btnCrawlList">更新目录</button>
           <button id="btnCrawlDetail">补详情</button>
           <button id="btnCrawlAll">全流程</button>
+          <button class="ghost" id="btnRecheck" title="对已入库的片重新探测，剔除 VIP/无源">复检 VIP</button>
         </div>
       </div>
 
@@ -273,7 +274,8 @@ async function saveSettings(withRegen) {
 
 async function loadStats() {
   const d = await api("/api/stats");
-  $("stats").textContent = "入库 " + d.vods + " 部 · " + d.episodes + " 集 · 已补详情 " + d.detailed + " 部";
+  $("stats").textContent = "入库 " + d.vods + " 部 · " + d.episodes + " 集 · 已补详情 " +
+    d.detailed + " 部" + (d.vip ? " · 已剔除 " + d.vip + " 部（VIP/无源）" : "");
   if ($("opsRoot")) $("opsRoot").textContent = d.strm_root || "strm/";
 }
 
@@ -513,6 +515,7 @@ $("btnExport").onclick = startExport;
 $("btnCrawlList").onclick = () => startCrawl("list");
 $("btnCrawlDetail").onclick = () => startCrawl("detail");
 $("btnCrawlAll").onclick = () => startCrawl("all");
+$("btnRecheck").onclick = () => startCrawl("recheck");
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
