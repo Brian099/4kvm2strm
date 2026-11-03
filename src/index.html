@@ -99,6 +99,17 @@
            text-align:center; color:var(--text); text-decoration:none; font-size:13px; }
   .eps a:hover { border-color:var(--accent); color:var(--accent); }
 
+  /* ---------- 播放器 ---------- */
+  .modal-player { width:min(1000px,100%); }
+  .modal-player .modal-body { padding:0; background:#000; }
+  #video { display:block; width:100%; max-height:72vh; background:#000; }
+  .qbtns { display:flex; gap:6px; }
+  .qbtns .q { background:transparent; border:1px solid var(--line); color:var(--muted);
+              padding:4px 10px; border-radius:6px; font-size:12.5px; }
+  .qbtns .q.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .ptip { padding:9px 14px; color:var(--muted); font-size:12px; background:var(--panel);
+          word-break:break-all; }
+
   @media (max-width:560px) {
     header { padding:10px 12px; gap:8px; }
     main { padding:12px 12px 40px; }
@@ -195,6 +206,20 @@
       </div>
 
       <p class="tip">导出目录：<code id="opsRoot">—</code></p>
+    </div>
+  </div>
+</div>
+
+<div class="mask" id="playerMask">
+  <div class="modal modal-player">
+    <div class="modal-head">
+      <h2 id="pTitle">—</h2>
+      <div class="qbtns" id="pQual"></div>
+      <button class="close" id="btnPlayerClose">&times;</button>
+    </div>
+    <div class="modal-body">
+      <video id="video" controls playsinline preload="metadata"></video>
+      <div class="ptip" id="pTip"></div>
     </div>
   </div>
 </div>
@@ -337,11 +362,95 @@ async function openDetail(v) {
 
   if (eps.length) {
     html += '<div class="eps">' + eps.map((e) =>
-      '<a href="/v/' + esc(v.slug) + '/' + esc(e.ep_id) + '.m3u8" target="_blank" rel="noreferrer">第' +
-      e.seq + '集</a>').join("") + '</div>' +
-      '<p class="tip">点集会打开 m3u8 地址；更适合把地址丢给 Emby / PotPlayer。</p>';
+      '<a href="#" data-slug="' + esc(v.slug) + '" data-ep="' + esc(e.ep_id) +
+      '" data-seq="' + e.seq + '">第' + e.seq + '集</a>').join("") + '</div>' +
+      '<p class="tip">点集在页面里预览；也可以把地址丢给 Emby / PotPlayer。</p>';
   }
   $("dBody").innerHTML = html;
+  Array.prototype.forEach.call(document.querySelectorAll("#dBody .eps a"), (a) => {
+    a.onclick = (ev) => {
+      ev.preventDefault();
+      playEpisode(a.dataset.slug, a.dataset.ep, a.dataset.seq, v.name);
+    };
+  });
+}
+
+// ---------------- 播放器 ----------------
+let hlsLib = null, hlsInst = null, curQ = "1080", curPlay = null;
+
+function ensureHls() {
+  if (window.Hls) return Promise.resolve(true);
+  if (hlsLib) return hlsLib;
+  hlsLib = new Promise((resolve) => {
+    const sc = document.createElement("script");
+    sc.src = "hls.min.js";
+    sc.onload = () => resolve(!!window.Hls);
+    sc.onerror = () => resolve(false);
+    document.head.appendChild(sc);
+  });
+  return hlsLib;
+}
+
+function renderQualities() {
+  const box = $("pQual");
+  box.innerHTML = "";
+  ["1080", "720", "480"].forEach((q) => {
+    const b = document.createElement("button");
+    b.className = "q" + (q === curQ ? " on" : "");
+    b.textContent = q + "p";
+    b.onclick = () => {
+      curQ = q;
+      renderQualities();
+      if (curPlay) playEpisode(curPlay.slug, curPlay.ep, curPlay.seq, curPlay.name);
+    };
+    box.appendChild(b);
+  });
+}
+
+async function playEpisode(slug, ep, seq, name) {
+  curPlay = { slug, ep, seq, name };
+  $("pTitle").textContent = (name || slug) + " 第" + seq + "集";
+  $("playerMask").classList.add("on");
+  renderQualities();
+
+  // 浏览器走 proxy 模式：分片由本服务剥掉假 PNG 头再给 hls.js
+  const url = "/v/" + encodeURIComponent(slug) + "/" + encodeURIComponent(ep) +
+              ".m3u8?mode=proxy&q=" + curQ;
+  $("pTip").textContent = "地址：" + location.origin + url;
+
+  const video = $("video");
+  if (hlsInst) { try { hlsInst.destroy(); } catch (e) {} hlsInst = null; }
+  video.removeAttribute("src");
+  video.load();
+
+  const ok = await ensureHls();
+  if (ok && window.Hls && window.Hls.isSupported()) {
+    hlsInst = new Hls({ enableWorker: true, maxBufferLength: 30 });
+    hlsInst.loadSource(url);
+    hlsInst.attachMedia(video);
+    hlsInst.on(Hls.Events.ERROR, (_e, d) => {
+      if (d && d.fatal) {
+        $("pTip").textContent = "播放失败：" + (d.details || d.type) +
+          "　地址：" + location.origin + url;
+      }
+    });
+    video.play().catch(() => {});
+  } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    video.src = url;
+    video.play().catch(() => {});
+  } else {
+    $("pTip").textContent = "这个浏览器不支持 HLS，请把地址丢给 Emby / PotPlayer：" +
+      location.origin + url;
+  }
+}
+
+function stopPlay() {
+  if (hlsInst) { try { hlsInst.destroy(); } catch (e) {} hlsInst = null; }
+  const video = $("video");
+  try { video.pause(); } catch (e) {}
+  video.removeAttribute("src");
+  video.load();
+  curPlay = null;
 }
 
 async function startCrawl(mode) {
@@ -399,6 +508,7 @@ $("btnCopyCms").onclick = () => {
 };
 $("btnOpsClose").onclick = () => $("opsMask").classList.remove("on");
 $("btnDetailClose").onclick = () => $("detailMask").classList.remove("on");
+$("btnPlayerClose").onclick = () => { $("playerMask").classList.remove("on"); stopPlay(); };
 $("btnExport").onclick = startExport;
 $("btnCrawlList").onclick = () => startCrawl("list");
 $("btnCrawlDetail").onclick = () => startCrawl("detail");
@@ -408,10 +518,16 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     $("opsMask").classList.remove("on");
     $("detailMask").classList.remove("on");
+    $("playerMask").classList.remove("on");
+    stopPlay();
   }
 });
 Array.prototype.forEach.call(document.querySelectorAll(".mask"), (m) => {
-  m.addEventListener("click", (e) => { if (e.target === m) m.classList.remove("on"); });
+  m.addEventListener("click", (e) => {
+    if (e.target !== m) return;
+    m.classList.remove("on");
+    if (m.id === "playerMask") stopPlay();
+  });
 });
 
 loadStats();

@@ -275,6 +275,12 @@ def index():
     return send_from_directory(BASE_DIR, "index.html")
 
 
+@app.route("/hls.min.js")
+def ui_hls():
+    """播放器用的 hls.js，内置在镜像里，不依赖外网 CDN。"""
+    return send_from_directory(BASE_DIR, "hls.min.js")
+
+
 @app.route("/api/stats")
 def api_stats():
     s = db.stats()
