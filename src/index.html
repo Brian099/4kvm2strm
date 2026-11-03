@@ -158,6 +158,7 @@
           <button id="btnCrawlDetail">补详情</button>
           <button id="btnCrawlAll">全流程</button>
           <button class="ghost" id="btnRecheck" title="对已入库的片重新探测，剔除 VIP/无源">复检 VIP</button>
+          <button class="ghost" id="btnVerify" title="复核已标记的 VIP 片，把误判的恢复">复核 VIP</button>
         </div>
       </div>
 
@@ -516,6 +517,7 @@ $("btnCrawlList").onclick = () => startCrawl("list");
 $("btnCrawlDetail").onclick = () => startCrawl("detail");
 $("btnCrawlAll").onclick = () => startCrawl("all");
 $("btnRecheck").onclick = () => startCrawl("recheck");
+$("btnVerify").onclick = () => startCrawl("verify");
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {

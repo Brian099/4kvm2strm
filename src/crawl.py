@@ -303,6 +303,39 @@ def crawl_search(s, keyword, pages=1):
     return got
 
 
+def judge_vip(prober, eps, slug, pk):
+    """判断这部片该不该剔除。
+
+    返回 (vip, reason)：
+      (True,  "401")             明确要求 VIP
+      (True,  "no-free-source")  取流成功但没有任何免费清晰度（再探一集确认过）
+      (False, "ok")              正常
+      (None,  "probe-failed")    探测失败，别动它
+    """
+    info = prober.probe(eps[0]["ep_id"], slug, pk)
+    if info is None:
+        return None, "probe-failed"
+
+    code = info.get("code")
+    if code == 401:
+        return True, "401"
+    if code != 200:
+        return None, "code=%s" % code          # 404 之类的服务端抖动，不动它
+    if info.get("free"):
+        return False, "ok"
+
+    # code=200 但没有免费清晰度：可能是服务端抖动，换一集再确认一次
+    if len(eps) > 1:
+        info2 = prober.probe(eps[1]["ep_id"], slug, pk)
+        if info2 is None:
+            return None, "probe-failed"
+        if info2.get("code") == 200 and info2.get("free"):
+            return False, "ok"                 # 第二集能播 -> 不剔除
+        if info2.get("code") == 401:
+            return True, "401"
+    return True, "no-free-source"
+
+
 def crawl_details(s, limit=0, check_vip=True):
     """补详情。check_vip=True 时顺带探测取流接口，VIP 专属/无免费源的片直接标记剔除。"""
     rows = db.conn().execute(
@@ -325,19 +358,16 @@ def crawl_details(s, limit=0, check_vip=True):
         if prober:
             m = re.search(r"userlink:'([^']*)'", r.text)
             pk = m.group(1) if m else "0"
-            info = prober.probe(eps[0]["ep_id"], slug, pk)
-            if info is None:
-                # 探测失败：不写 detail_at，下一轮再试
-                log("  [%d/%d] %s 探测失败，跳过（下轮重试）" % (i, len(rows), row["name"]))
+            is_vip, why = judge_vip(prober, eps, slug, pk)
+            if is_vip is None:
+                log("  [%d/%d] %s 探测失败(%s)，跳过（下轮重试）"
+                    % (i, len(rows), row["name"], why))
                 time.sleep(config.DETAIL_SLEEP)
                 continue
-            code = info.get("code")
-            free = info.get("free", 0) or 0
-            if code == 401 or (code == 200 and free == 0):
+            if is_vip:
                 db.mark_vip(slug, 1)
                 vip += 1
-                reason = "VIP 专属" if code == 401 else "无免费清晰度"
-                log("  [%d/%d] %s -> 剔除（%s）" % (i, len(rows), row["name"], reason))
+                log("  [%d/%d] %s -> 剔除（%s）" % (i, len(rows), row["name"], why))
                 time.sleep(config.DETAIL_SLEEP)
                 continue
 
@@ -382,13 +412,13 @@ def recheck_vip(s, limit=0):
             continue
         m = re.search(r"userlink:'([^']*)'", h)
         pk = m.group(1) if m else "0"
-        info = prober.probe(eps[0]["ep_id"], slug, pk)
-        if info is None:
+        is_vip, why = judge_vip(prober, eps, slug, pk)
+        if is_vip is None:
             fail += 1
-        elif info.get("code") == 401 or (info.get("code") == 200 and not info.get("free")):
+        elif is_vip:
             db.mark_vip(slug, 1)
             vip += 1
-            log("  [%d/%d] %s -> 剔除" % (i, len(rows), row["name"]))
+            log("  [%d/%d] %s -> 剔除（%s）" % (i, len(rows), row["name"], why))
         else:
             ok += 1
         progress("复检 VIP", i, len(rows))
@@ -400,12 +430,61 @@ def recheck_vip(s, limit=0):
     return vip
 
 
+def verify_vip(s, limit=0):
+    """复核已被标记 vip 的片，把误判的恢复回来。
+
+    标记时可能赶上服务端抖动，这里重新探两集：只要有一集能播就恢复
+    （vip=0、detail_at=0，下一轮补详情会重新写入分集）。
+    """
+    rows = db.conn().execute(
+        "SELECT slug,name FROM vod WHERE vip<>0 ORDER BY rowid LIMIT ?",
+        (limit or 10 ** 9,)).fetchall()
+    log("待复核：%d 部" % len(rows))
+    prober = Prober()
+    keep = restored = fail = 0
+    for i, row in enumerate(rows, 1):
+        slug = row["slug"]
+        try:
+            h = s.get(config.HOST + "/play/" + slug, timeout=25, verify=False).text
+        except Exception:
+            fail += 1
+            continue
+        ids = [{"ep_id": x, "seq": n + 1}
+               for n, x in enumerate(re.findall(r'dataid="(\d+)"', h)[:2])]
+        if not ids:
+            fail += 1
+            continue
+        m = re.search(r"userlink:'([^']*)'", h)
+        pk = m.group(1) if m else "0"
+        is_vip, why = judge_vip(prober, ids, slug, pk)
+        if is_vip is None:
+            fail += 1
+        elif is_vip:
+            keep += 1
+        else:
+            c = db.conn()
+            c.execute("UPDATE vod SET vip=0, detail_at=0, ep_count=0 WHERE slug=?", (slug,))
+            c.commit()
+            restored += 1
+            log("  [%d/%d] %s -> 恢复（其实能播）" % (i, len(rows), row["name"]))
+        progress("复核 VIP", i, len(rows))
+        if i % 20 == 0 or i == len(rows):
+            log("  复核 %d/%d（确认 VIP %d，恢复 %d，失败 %d）"
+                % (i, len(rows), keep, restored, fail))
+        time.sleep(config.DETAIL_SLEEP * 0.6)
+    prober.close()
+    log("复核完成：确认 VIP %d，恢复 %d，失败 %d" % (keep, restored, fail))
+    return restored
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pages", type=int, default=0, help="抓多少页目录（0=全部）")
     ap.add_argument("--start", type=int, default=1)
     ap.add_argument("--detail-only", action="store_true")
     ap.add_argument("--detail-limit", type=int, default=0)
+    ap.add_argument("--verify-vip", action="store_true",
+                    help="复核已标记的 VIP 片，把误判的恢复回来")
     ap.add_argument("--recheck-vip", action="store_true",
                     help="对已入库的片重新探测并剔除 VIP/无源")
     ap.add_argument("--no-vip-check", action="store_true",
@@ -419,6 +498,12 @@ def main():
     s = session()
     print("目标站点：%s" % config.HOST)
     print("当前库：%s" % db.stats())
+
+    if args.verify_vip:
+        n = verify_vip(s, args.detail_limit)
+        print("复核完成，恢复 %d 部" % n)
+        print("最终库：%s" % db.stats())
+        return 0
 
     if args.recheck_vip:
         n = recheck_vip(s, args.detail_limit)
